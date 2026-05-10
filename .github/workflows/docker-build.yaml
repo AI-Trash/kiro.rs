@@ -7,11 +7,6 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
-    inputs:
-      version:
-        description: 'Version tag for Docker images (e.g., 2025.12.1)'
-        required: true
-        default: '2026.1.1'
 
 permissions:
   contents: read
@@ -32,19 +27,38 @@ jobs:
         run: |
           if [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == refs/heads/* ]] && git tag --points-at HEAD | grep -q '^v'; then
             echo "should_build=false" >> $GITHUB_OUTPUT
-            echo "::notice::Skipping beta build: commit already has a release tag"
+            echo "::notice::Skipping branch build: commit already has a release tag"
           else
             echo "should_build=true" >> $GITHUB_OUTPUT
           fi
 
-  build:
+  metadata:
     needs: pre-check
     if: needs.pre-check.outputs.should_build == 'true'
-    runs-on: ${{ matrix.runner }}
+    runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.version.outputs.version }}
-      is_beta: ${{ steps.version.outputs.is_beta }}
-      image_owner: ${{ steps.image-owner.outputs.image_owner }}
+      image_owner: ${{ steps.metadata.outputs.image_owner }}
+      has_release_tag: ${{ steps.metadata.outputs.has_release_tag }}
+      release_tag: ${{ steps.metadata.outputs.release_tag }}
+    steps:
+      - name: Determine image metadata
+        id: metadata
+        run: |
+          echo "image_owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            echo "has_release_tag=true" >> "$GITHUB_OUTPUT"
+            echo "release_tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_release_tag=false" >> "$GITHUB_OUTPUT"
+            echo "release_tag=" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs:
+      - pre-check
+      - metadata
+    if: needs.pre-check.outputs.should_build == 'true'
+    runs-on: ${{ matrix.runner }}
 
     strategy:
       fail-fast: false
@@ -61,26 +75,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Determine version
-        id: version
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
-            echo "is_beta=false" >> $GITHUB_OUTPUT
-          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            echo "version=${{ github.ref_name }}" >> $GITHUB_OUTPUT
-            echo "is_beta=false" >> $GITHUB_OUTPUT
-          else
-            SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-6)
-            echo "version=beta-${SHORT_SHA}" >> $GITHUB_OUTPUT
-            echo "is_beta=true" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Determine image owner
-        id: image-owner
-        run: |
-          echo "image_owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -91,6 +85,19 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ github.token }}
 
+      - name: Determine image tags
+        id: tags
+        run: |
+          IMAGE="ghcr.io/${{ needs.metadata.outputs.image_owner }}/kiro-rs"
+          {
+            echo "tags<<EOF"
+            echo "${IMAGE}:latest-${{ matrix.arch }}"
+            if [ "${{ needs.metadata.outputs.has_release_tag }}" = "true" ]; then
+              echo "${IMAGE}:${{ needs.metadata.outputs.release_tag }}-${{ matrix.arch }}"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
@@ -100,13 +107,15 @@ jobs:
           cache-to: type=gha,mode=max
           push: true
           provenance: false
-          tags: ghcr.io/${{ steps.image-owner.outputs.image_owner }}/kiro-rs:${{ steps.version.outputs.version }}-${{ matrix.arch }}
+          tags: ${{ steps.tags.outputs.tags }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.description=Kiro.rs Docker Image
 
   manifest:
-    needs: build
+    needs:
+      - build
+      - metadata
     runs-on: ubuntu-latest
     steps:
       - name: Log in to GitHub Container Registry
@@ -118,23 +127,19 @@ jobs:
 
       - name: Create and push multi-arch manifest
         run: |
-          VERSION="${{ needs.build.outputs.version }}"
-          IS_BETA="${{ needs.build.outputs.is_beta }}"
-          IMAGE="ghcr.io/${{ needs.build.outputs.image_owner }}/kiro-rs"
+          IMAGE="ghcr.io/${{ needs.metadata.outputs.image_owner }}/kiro-rs"
 
-          # Create manifest for version tag
-          docker manifest create ${IMAGE}:${VERSION} \
-            ${IMAGE}:${VERSION}-amd64 \
-            ${IMAGE}:${VERSION}-arm64
-          docker manifest push ${IMAGE}:${VERSION}
+          # Always publish latest.
+          docker manifest create ${IMAGE}:latest \
+            ${IMAGE}:latest-amd64 \
+            ${IMAGE}:latest-arm64
+          docker manifest push ${IMAGE}:latest
 
-          # Create manifest for latest/beta alias tag
-          if [ "${IS_BETA}" = "true" ]; then
-            ALIAS_TAG="beta"
-          else
-            ALIAS_TAG="latest"
+          # Tag builds also publish the Git tag.
+          if [ "${{ needs.metadata.outputs.has_release_tag }}" = "true" ]; then
+            RELEASE_TAG="${{ needs.metadata.outputs.release_tag }}"
+            docker manifest create ${IMAGE}:${RELEASE_TAG} \
+              ${IMAGE}:${RELEASE_TAG}-amd64 \
+              ${IMAGE}:${RELEASE_TAG}-arm64
+            docker manifest push ${IMAGE}:${RELEASE_TAG}
           fi
-          docker manifest create ${IMAGE}:${ALIAS_TAG} \
-            ${IMAGE}:${VERSION}-amd64 \
-            ${IMAGE}:${VERSION}-arm64
-          docker manifest push ${IMAGE}:${ALIAS_TAG}
