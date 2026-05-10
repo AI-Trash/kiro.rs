@@ -31,11 +31,8 @@ async fn main() {
         )
         .init();
 
-    // 加载配置
-    let config_path = args
-        .config
-        .unwrap_or_else(|| Config::default_config_path().to_string());
-    let config = Config::load(&config_path).unwrap_or_else(|e| {
+    // 加载配置：config.json 可选，KIRO_RS_* 环境变量可覆盖配置项
+    let config = Config::load_runtime(args.config.as_deref()).unwrap_or_else(|e| {
         tracing::error!("加载配置失败: {}", e);
         std::process::exit(1);
     });
@@ -79,7 +76,7 @@ async fn main() {
 
     // 获取 API Key
     let api_key = config.api_key.clone().unwrap_or_else(|| {
-        tracing::error!("配置文件中未设置 apiKey");
+        tracing::error!("未设置 apiKey，请配置 config.json 的 apiKey 或 KIRO_RS_API_KEY 环境变量");
         std::process::exit(1);
     });
 
@@ -111,10 +108,7 @@ async fn main() {
 
     // 校验所有凭据声明的端点都已注册
     for cred in &credentials_list {
-        let name = cred
-            .endpoint
-            .as_deref()
-            .unwrap_or(&config.default_endpoint);
+        let name = cred.endpoint.as_deref().unwrap_or(&config.default_endpoint);
         if !endpoints.contains_key(name) {
             tracing::error!(
                 "凭据 id={:?} 指定了未知端点 \"{}\"（已注册: {:?}）",

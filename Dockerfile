@@ -28,4 +28,7 @@ VOLUME ["/app/config"]
 
 EXPOSE 8990
 
-CMD ["./kiro-rs", "-c", "/app/config/config.json", "--credentials", "/app/config/credentials.json"]
+ENV KIRO_RS_HOST=0.0.0.0
+ENV KIRO_RS_PORT=8990
+
+CMD ["./kiro-rs", "--credentials", "/app/config/credentials.json"]

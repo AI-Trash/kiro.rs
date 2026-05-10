@@ -8,6 +8,12 @@ services:
       - "host.docker.internal:host-gateway"
     ports:
       - "8990:8990"
+    environment:
+      KIRO_RS_API_KEY: ${KIRO_RS_API_KEY:-sk-kiro-rs-qazWSXedcRFV123456}
+      KIRO_RS_ADMIN_API_KEY: ${KIRO_RS_ADMIN_API_KEY:-}
+      KIRO_RS_REGION: ${KIRO_RS_REGION:-us-east-1}
+      # 可选：通过环境变量直接添加一个 Kiro API Key 凭据，跳过 credentials.json
+      # KIRO_API_KEY: ${KIRO_API_KEY:-}
     volumes:
       - ./config/:/app/config/
     restart: unless-stopped

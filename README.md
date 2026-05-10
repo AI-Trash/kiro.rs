@@ -24,7 +24,7 @@
 
 ## 注意！
 
-因 TLS 默认从 native-tls 切换至 rustls，你可能需要专门安装证书后才能配置 HTTP 代理。可通过 `config.json` 的 `tlsBackend` 切回 `native-tls`。
+因 TLS 默认从 native-tls 切换至 rustls，你可能需要专门安装证书后才能配置 HTTP 代理。可通过 `config.json` 的 `tlsBackend` 或 `KIRO_RS_TLS_BACKEND=native-tls` 切回 `native-tls`。
 如果遇到请求报错, 尤其是无法刷新 token, 或者是直接返回 error request, 请尝试切换 tls 后端为 `native-tls`, 一般即可解决。
 
 **Write Failed/会话卡死**: 如果遇到持续的 Write File / Write Failed 并导致会话不可用，参考 Issue [#22](https://github.com/hank9999/kiro.rs/issues/22) 和 [#49](https://github.com/hank9999/kiro.rs/issues/49) 的说明与临时解决方案（通常与输出过长被截断有关，可尝试调低输出相关 token 上限）
@@ -91,7 +91,14 @@ cargo build --release
 
 ### 2. 最小配置
 
-创建 `config.json`：
+可直接通过环境变量提供最小运行配置：
+
+```bash
+export KIRO_RS_API_KEY="sk-kiro-rs-qazWSXedcRFV123456"
+export KIRO_RS_PORT=8990
+```
+
+也可以继续使用可选的 `config.json`：
 
 ```json
 {
@@ -133,7 +140,7 @@ IdC 认证：
 ./target/release/kiro-rs
 ```
 
-或指定配置文件路径：
+如需显式指定配置文件路径：
 
 ```bash
 ./target/release/kiro-rs -c /path/to/config.json --credentials /path/to/credentials.json
@@ -163,11 +170,13 @@ curl http://127.0.0.1:8990/v1/messages \
 docker-compose up
 ```
 
-需要将 `config.json` 和 `credentials.json` 挂载到容器中，具体参见 `docker-compose.yml`。
+Docker 镜像默认不再强制读取 `/app/config/config.json`，可直接通过 `KIRO_RS_*` 环境变量启动。`credentials.json` 也可省略；如果设置 `KIRO_API_KEY`，会自动创建一个最高优先级的 Kiro API Key 凭据。挂载 `./config/` 仍可用于可选的 `config.json`、`credentials.json` 以及 Admin 对凭据的回写。
 
 ## 配置详解
 
 ### config.json
+
+`config.json` 是可选配置文件。启动时如果未传 `-c/--config`，程序会自动尝试读取当前目录的 `config.json` 或 `config/config.json`；都不存在时使用默认值并依赖环境变量补齐必需项。环境变量优先级高于文件配置。
 
 | 字段 | 类型 | 默认值 | 描述 |
 |------|------|--------|------|
@@ -192,6 +201,38 @@ docker-compose up
 | `loadBalancingMode` | string | `priority` | 负载均衡模式：`priority`（按优先级）或 `balanced`（均衡分配） |
 | `extractThinking` | boolean | `true` | 非流式响应的 thinking 块提取。启用后 `<thinking>` 标签会被解析为独立的 `thinking` 内容块 |
 | `defaultEndpoint` | string | `ide` | 默认 Kiro 端点。凭据未显式指定 `endpoint` 时使用。当前支持：`ide` |
+
+#### 环境变量
+
+以下环境变量会覆盖 `config.json` 中的同名配置：
+
+| 环境变量 | 对应配置 | 说明 |
+|----------|----------|------|
+| `KIRO_RS_CONFIG` | - | 可选配置文件路径，优先级低于命令行 `-c/--config` |
+| `KIRO_RS_HOST` | `host` | 服务监听地址 |
+| `KIRO_RS_PORT` | `port` | 服务监听端口 |
+| `KIRO_RS_API_KEY` | `apiKey` | 访问本代理的 API Key，必配 |
+| `KIRO_RS_REGION` | `region` | 默认区域 |
+| `KIRO_RS_AUTH_REGION` | `authRegion` | Auth Region，空值表示清除配置 |
+| `KIRO_RS_API_REGION` | `apiRegion` | API Region，空值表示清除配置 |
+| `KIRO_RS_KIRO_VERSION` | `kiroVersion` | Kiro 版本号 |
+| `KIRO_RS_MACHINE_ID` | `machineId` | 自定义机器码，空值表示清除配置 |
+| `KIRO_RS_SYSTEM_VERSION` | `systemVersion` | 系统版本标识 |
+| `KIRO_RS_NODE_VERSION` | `nodeVersion` | Node.js 版本标识 |
+| `KIRO_RS_TLS_BACKEND` | `tlsBackend` | `rustls` 或 `native-tls` |
+| `KIRO_RS_COUNT_TOKENS_API_URL` | `countTokensApiUrl` | 外部 count_tokens API 地址，空值表示清除配置 |
+| `KIRO_RS_COUNT_TOKENS_API_KEY` | `countTokensApiKey` | 外部 count_tokens API 密钥，空值表示清除配置 |
+| `KIRO_RS_COUNT_TOKENS_AUTH_TYPE` | `countTokensAuthType` | `x-api-key` 或 `bearer` |
+| `KIRO_RS_PROXY_URL` | `proxyUrl` | HTTP/SOCKS5 代理地址，空值表示清除配置 |
+| `KIRO_RS_PROXY_USERNAME` | `proxyUsername` | 代理用户名，空值表示清除配置 |
+| `KIRO_RS_PROXY_PASSWORD` | `proxyPassword` | 代理密码，空值表示清除配置 |
+| `KIRO_RS_ADMIN_API_KEY` | `adminApiKey` | Admin API/UI 密钥，空值表示禁用 Admin |
+| `KIRO_RS_LOAD_BALANCING_MODE` | `loadBalancingMode` | `priority` 或 `balanced` |
+| `KIRO_RS_EXTRACT_THINKING` | `extractThinking` | `true/false`、`1/0`、`yes/no` 或 `on/off` |
+| `KIRO_RS_DEFAULT_ENDPOINT` | `defaultEndpoint` | 默认 Kiro 端点 |
+| `KIRO_RS_ENDPOINTS` | `endpoints` | JSON 对象，空值表示清空端点配置 |
+
+另外，`KIRO_API_KEY` 不是本代理的访问密钥，而是上游 Kiro API Key 凭据；设置后会自动加入凭据列表，优先级最高。
 
 完整配置示例：
 
@@ -362,7 +403,7 @@ docker-compose up
    Authorization: Bearer sk-your-api-key
    ```
 
-### 环境变量
+### 日志级别
 
 可通过环境变量配置日志级别：
 
@@ -444,7 +485,7 @@ RUST_LOG=debug ./target/release/kiro-rs
 
 ## Admin（可选）
 
-当 `config.json` 配置了非空 `adminApiKey` 时，会启用：
+当 `config.json` 配置了非空 `adminApiKey`，或设置了非空 `KIRO_RS_ADMIN_API_KEY` 时，会启用：
 
 - **Admin API（认证同 API Key）**
   - `GET /api/admin/credentials` - 获取所有凭据状态
