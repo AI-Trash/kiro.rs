@@ -2,7 +2,8 @@ FROM node:22-alpine AS frontend-builder
 
 WORKDIR /app/admin-ui
 COPY admin-ui/package.json ./
-RUN npm install -g pnpm && pnpm install
+COPY admin-ui/pnpm-lock.yaml ./
+RUN corepack enable && corepack prepare pnpm@9 --activate && pnpm install --frozen-lockfile
 COPY admin-ui ./
 RUN pnpm build
 
