@@ -9,9 +9,9 @@ use crate::token;
 use anyhow::Error;
 use axum::{
     Json as JsonExtractor,
-    body::Body,
+    body::{Body, to_bytes},
     extract::State,
-    http::{StatusCode, header},
+    http::{HeaderMap, Request, StatusCode, header},
     response::{IntoResponse, Json, Response},
 };
 use bytes::Bytes;
@@ -21,6 +21,7 @@ use std::time::Duration;
 use tokio::time::interval;
 use uuid::Uuid;
 
+use super::cache_simulator::{CachePlan, PromptCacheSimulator, patch_json_response_usage};
 use super::converter::{ConversionError, convert_request};
 use super::middleware::AppState;
 use super::stream::{BufferedStreamContext, SseEvent, StreamContext};
@@ -29,6 +30,57 @@ use super::types::{
     OutputConfig, Thinking,
 };
 use super::websearch;
+
+const MAX_MESSAGES_BODY_SIZE: usize = 50 * 1024 * 1024;
+
+async fn parse_messages_request(
+    request: Request<Body>,
+) -> Result<(HeaderMap, serde_json::Value, MessagesRequest), Response> {
+    let headers = request.headers().clone();
+    let body = match to_bytes(request.into_body(), MAX_MESSAGES_BODY_SIZE).await {
+        Ok(body) => body,
+        Err(e) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse::new(
+                    "invalid_request_error",
+                    format!("读取请求体失败: {}", e),
+                )),
+            )
+                .into_response());
+        }
+    };
+
+    let raw_request = match serde_json::from_slice::<serde_json::Value>(&body) {
+        Ok(value) => value,
+        Err(e) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse::new(
+                    "invalid_request_error",
+                    format!("请求 JSON 解析失败: {}", e),
+                )),
+            )
+                .into_response());
+        }
+    };
+
+    let payload = match serde_json::from_value::<MessagesRequest>(raw_request.clone()) {
+        Ok(payload) => payload,
+        Err(e) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse::new(
+                    "invalid_request_error",
+                    format!("请求格式无效: {}", e),
+                )),
+            )
+                .into_response());
+        }
+    };
+
+    Ok((headers, raw_request, payload))
+}
 
 /// 将 KiroProvider 错误映射为 HTTP 响应
 fn map_provider_error(err: Error) -> Response {
@@ -178,10 +230,12 @@ pub async fn get_models() -> impl IntoResponse {
 /// POST /v1/messages
 ///
 /// 创建消息（对话）
-pub async fn post_messages(
-    State(state): State<AppState>,
-    JsonExtractor(mut payload): JsonExtractor<MessagesRequest>,
-) -> Response {
+pub async fn post_messages(State(state): State<AppState>, request: Request<Body>) -> Response {
+    let (headers, raw_request, mut payload) = match parse_messages_request(request).await {
+        Ok(parsed) => parsed,
+        Err(response) => return response,
+    };
+
     tracing::info!(
         model = %payload.model,
         max_tokens = %payload.max_tokens,
@@ -207,6 +261,10 @@ pub async fn post_messages(
 
     // 检测模型名是否包含 "thinking" 后缀，若包含则覆写 thinking 配置
     override_thinking_from_model_name(&mut payload);
+
+    let cache_plan = state
+        .prompt_cache_simulator
+        .plan_from_request(&headers, &raw_request);
 
     // 检查是否为 WebSearch 请求
     if websearch::has_web_search_tool(&payload) {
@@ -293,6 +351,8 @@ pub async fn post_messages(
             input_tokens,
             thinking_enabled,
             tool_name_map,
+            state.prompt_cache_simulator.clone(),
+            cache_plan,
         )
         .await
     } else {
@@ -305,6 +365,8 @@ pub async fn post_messages(
             input_tokens,
             extract_thinking,
             tool_name_map,
+            state.prompt_cache_simulator.clone(),
+            cache_plan,
         )
         .await
     }
@@ -318,6 +380,8 @@ async fn handle_stream_request(
     input_tokens: i32,
     thinking_enabled: bool,
     tool_name_map: std::collections::HashMap<String, String>,
+    cache_simulator: PromptCacheSimulator,
+    cache_plan: Option<CachePlan>,
 ) -> Response {
     // 调用 Kiro API（支持多凭据故障转移）
     let response = match provider.call_api_stream(request_body).await {
@@ -325,9 +389,16 @@ async fn handle_stream_request(
         Err(e) => return map_provider_error(e),
     };
 
+    let cache_result = cache_simulator.lookup_or_create(cache_plan).await;
+
     // 创建流处理上下文
-    let mut ctx =
-        StreamContext::new_with_thinking(model, input_tokens, thinking_enabled, tool_name_map);
+    let mut ctx = StreamContext::new_with_cache(
+        model,
+        input_tokens,
+        thinking_enabled,
+        tool_name_map,
+        cache_result,
+    );
 
     // 生成初始事件
     let initial_events = ctx.generate_initial_events();
@@ -455,6 +526,8 @@ async fn handle_non_stream_request(
     input_tokens: i32,
     thinking_enabled: bool,
     tool_name_map: std::collections::HashMap<String, String>,
+    cache_simulator: PromptCacheSimulator,
+    cache_plan: Option<CachePlan>,
 ) -> Response {
     // 调用 Kiro API（支持多凭据故障转移）
     let response = match provider.call_api(request_body).await {
@@ -477,6 +550,8 @@ async fn handle_non_stream_request(
                 .into_response();
         }
     };
+
+    let cache_result = cache_simulator.lookup_or_create(cache_plan).await;
 
     // 解析事件流
     let mut decoder = EventStreamDecoder::new();
@@ -614,7 +689,7 @@ async fn handle_non_stream_request(
     let final_input_tokens = context_input_tokens.unwrap_or(input_tokens);
 
     // 构建 Anthropic 响应
-    let response_body = json!({
+    let mut response_body = json!({
         "id": format!("msg_{}", Uuid::new_v4().to_string().replace('-', "")),
         "type": "message",
         "role": "assistant",
@@ -627,6 +702,10 @@ async fn handle_non_stream_request(
             "output_tokens": output_tokens
         }
     });
+
+    if let Some(cache_result) = &cache_result {
+        patch_json_response_usage(&mut response_body, cache_result);
+    }
 
     (StatusCode::OK, Json(response_body)).into_response()
 }
@@ -694,10 +773,12 @@ pub async fn count_tokens(
 /// Claude Code 兼容端点，与 /v1/messages 的区别在于：
 /// - 流式响应会等待 kiro 端返回 contextUsageEvent 后再发送 message_start
 /// - message_start 中的 input_tokens 是从 contextUsageEvent 计算的准确值
-pub async fn post_messages_cc(
-    State(state): State<AppState>,
-    JsonExtractor(mut payload): JsonExtractor<MessagesRequest>,
-) -> Response {
+pub async fn post_messages_cc(State(state): State<AppState>, request: Request<Body>) -> Response {
+    let (headers, raw_request, mut payload) = match parse_messages_request(request).await {
+        Ok(parsed) => parsed,
+        Err(response) => return response,
+    };
+
     tracing::info!(
         model = %payload.model,
         max_tokens = %payload.max_tokens,
@@ -724,6 +805,10 @@ pub async fn post_messages_cc(
 
     // 检测模型名是否包含 "thinking" 后缀，若包含则覆写 thinking 配置
     override_thinking_from_model_name(&mut payload);
+
+    let cache_plan = state
+        .prompt_cache_simulator
+        .plan_from_request(&headers, &raw_request);
 
     // 检查是否为 WebSearch 请求
     if websearch::has_web_search_tool(&payload) {
@@ -810,6 +895,8 @@ pub async fn post_messages_cc(
             input_tokens,
             thinking_enabled,
             tool_name_map,
+            state.prompt_cache_simulator.clone(),
+            cache_plan,
         )
         .await
     } else {
@@ -822,6 +909,8 @@ pub async fn post_messages_cc(
             input_tokens,
             extract_thinking,
             tool_name_map,
+            state.prompt_cache_simulator.clone(),
+            cache_plan,
         )
         .await
     }
@@ -838,6 +927,8 @@ async fn handle_stream_request_buffered(
     estimated_input_tokens: i32,
     thinking_enabled: bool,
     tool_name_map: std::collections::HashMap<String, String>,
+    cache_simulator: PromptCacheSimulator,
+    cache_plan: Option<CachePlan>,
 ) -> Response {
     // 调用 Kiro API（支持多凭据故障转移）
     let response = match provider.call_api_stream(request_body).await {
@@ -845,12 +936,15 @@ async fn handle_stream_request_buffered(
         Err(e) => return map_provider_error(e),
     };
 
+    let cache_result = cache_simulator.lookup_or_create(cache_plan).await;
+
     // 创建缓冲流处理上下文
-    let ctx = BufferedStreamContext::new(
+    let ctx = BufferedStreamContext::new_with_cache_result(
         model,
         estimated_input_tokens,
         thinking_enabled,
         tool_name_map,
+        cache_result,
     );
 
     // 创建缓冲 SSE 流

@@ -9,6 +9,8 @@ use uuid::Uuid;
 
 use crate::kiro::model::events::Event;
 
+use super::cache_simulator::{CacheResult, patch_sse_events_usage};
+
 /// 找到小于等于目标位置的最近有效UTF-8字符边界
 ///
 /// UTF-8字符可能占用1-4个字节，直接按字节位置切片可能会切在多字节字符中间导致panic。
@@ -517,6 +519,8 @@ pub struct StreamContext {
     pub context_input_tokens: Option<i32>,
     /// 输出 tokens 累计
     pub output_tokens: i32,
+    /// Prompt-cache simulator result for usage fields
+    pub cache_result: Option<CacheResult>,
     /// 工具块索引映射 (tool_id -> block_index)
     pub tool_block_indices: HashMap<String, i32>,
     /// 工具名称反向映射（短名称 → 原始名称），用于响应时还原
@@ -540,11 +544,23 @@ pub struct StreamContext {
 
 impl StreamContext {
     /// 创建启用thinking的StreamContext
+    #[cfg(test)]
     pub fn new_with_thinking(
         model: impl Into<String>,
         input_tokens: i32,
         thinking_enabled: bool,
         tool_name_map: HashMap<String, String>,
+    ) -> Self {
+        Self::new_with_cache(model, input_tokens, thinking_enabled, tool_name_map, None)
+    }
+
+    /// 创建带 prompt-cache usage 字段的 StreamContext
+    pub fn new_with_cache(
+        model: impl Into<String>,
+        input_tokens: i32,
+        thinking_enabled: bool,
+        tool_name_map: HashMap<String, String>,
+        cache_result: Option<CacheResult>,
     ) -> Self {
         Self {
             state_manager: SseStateManager::new(),
@@ -553,6 +569,7 @@ impl StreamContext {
             input_tokens,
             context_input_tokens: None,
             output_tokens: 0,
+            cache_result,
             tool_block_indices: HashMap::new(),
             tool_name_map,
             thinking_enabled,
@@ -567,7 +584,7 @@ impl StreamContext {
 
     /// 生成 message_start 事件
     pub fn create_message_start_event(&self) -> serde_json::Value {
-        json!({
+        let mut event = json!({
             "type": "message_start",
             "message": {
                 "id": self.message_id,
@@ -582,7 +599,13 @@ impl StreamContext {
                     "output_tokens": 1
                 }
             }
-        })
+        });
+        if let Some(cache) = &self.cache_result {
+            let mut events = [SseEvent::new("message_start", event)];
+            patch_sse_events_usage(&mut events, cache);
+            event = events.into_iter().next().expect("one patched event").data;
+        }
+        event
     }
 
     /// 生成初始事件序列 (message_start + 文本块 start)
@@ -1118,6 +1141,9 @@ impl StreamContext {
             self.state_manager
                 .generate_final_events(final_input_tokens, self.output_tokens),
         );
+        if let Some(cache) = &self.cache_result {
+            patch_sse_events_usage(&mut events, cache);
+        }
         events
     }
 }
@@ -1144,19 +1170,25 @@ pub struct BufferedStreamContext {
 }
 
 impl BufferedStreamContext {
-    /// 创建缓冲流上下文
-    pub fn new(
+    /// 创建带 prompt-cache usage 字段的缓冲流上下文
+    pub fn new_with_cache_result(
         model: impl Into<String>,
         estimated_input_tokens: i32,
         thinking_enabled: bool,
         tool_name_map: HashMap<String, String>,
+        cache_result: Option<CacheResult>,
     ) -> Self {
-        let inner = StreamContext::new_with_thinking(
+        let inner = StreamContext::new_with_cache(
             model,
             estimated_input_tokens,
             thinking_enabled,
             tool_name_map,
+            cache_result,
         );
+        Self::new_with_cache(inner, estimated_input_tokens)
+    }
+
+    fn new_with_cache(inner: StreamContext, estimated_input_tokens: i32) -> Self {
         Self {
             inner,
             event_buffer: Vec::new(),
