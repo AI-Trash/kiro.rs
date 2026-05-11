@@ -1236,13 +1236,19 @@ impl BufferedStreamContext {
             .inner
             .context_input_tokens
             .unwrap_or(self.estimated_input_tokens);
+        let patched_input_tokens = self
+            .inner
+            .cache_result
+            .as_ref()
+            .map(|cache| cache.uncached_input_tokens)
+            .unwrap_or(final_input_tokens);
 
         // 更正 message_start 事件中的 input_tokens
         for event in &mut self.event_buffer {
             if event.event == "message_start" {
                 if let Some(message) = event.data.get_mut("message") {
                     if let Some(usage) = message.get_mut("usage") {
-                        usage["input_tokens"] = serde_json::json!(final_input_tokens);
+                        usage["input_tokens"] = serde_json::json!(patched_input_tokens);
                     }
                 }
             }
@@ -2036,6 +2042,37 @@ mod tests {
         assert_eq!(
             message_delta.data["delta"]["stop_reason"], "tool_use",
             "stop_reason should be tool_use when tool_use is present"
+        );
+    }
+
+    #[test]
+    fn buffered_stream_preserves_uncached_input_tokens_from_cache_result() {
+        let cache_result = CacheResult {
+            cache_read_input_tokens: 100,
+            cache_creation_input_tokens: 20,
+            uncached_input_tokens: 7,
+        };
+        let mut ctx = BufferedStreamContext::new_with_cache_result(
+            "test-model",
+            200,
+            false,
+            HashMap::new(),
+            Some(cache_result),
+        );
+
+        let events = ctx.finish_and_get_all_events();
+        let message_start = events
+            .iter()
+            .find(|event| event.event == "message_start")
+            .expect("message_start should exist");
+
+        assert_eq!(
+            message_start.data["message"]["usage"]["input_tokens"],
+            serde_json::json!(7)
+        );
+        assert_eq!(
+            message_start.data["message"]["usage"]["cache_read_input_tokens"],
+            serde_json::json!(100)
         );
     }
 }

@@ -35,6 +35,7 @@ const MAX_MESSAGES_BODY_SIZE: usize = 50 * 1024 * 1024;
 
 async fn parse_messages_request(
     request: Request<Body>,
+    cache_simulator: &PromptCacheSimulator,
 ) -> Result<(HeaderMap, serde_json::Value, MessagesRequest), Response> {
     let headers = request.headers().clone();
     let body = match to_bytes(request.into_body(), MAX_MESSAGES_BODY_SIZE).await {
@@ -51,7 +52,7 @@ async fn parse_messages_request(
         }
     };
 
-    let raw_request = match serde_json::from_slice::<serde_json::Value>(&body) {
+    let mut raw_request = match serde_json::from_slice::<serde_json::Value>(&body) {
         Ok(value) => value,
         Err(e) => {
             return Err((
@@ -64,6 +65,8 @@ async fn parse_messages_request(
                 .into_response());
         }
     };
+
+    cache_simulator.strip_cch_from_request(&mut raw_request);
 
     let payload = match serde_json::from_value::<MessagesRequest>(raw_request.clone()) {
         Ok(payload) => payload,
@@ -231,10 +234,11 @@ pub async fn get_models() -> impl IntoResponse {
 ///
 /// 创建消息（对话）
 pub async fn post_messages(State(state): State<AppState>, request: Request<Body>) -> Response {
-    let (headers, raw_request, mut payload) = match parse_messages_request(request).await {
-        Ok(parsed) => parsed,
-        Err(response) => return response,
-    };
+    let (headers, raw_request, mut payload) =
+        match parse_messages_request(request, &state.prompt_cache_simulator).await {
+            Ok(parsed) => parsed,
+            Err(response) => return response,
+        };
 
     tracing::info!(
         model = %payload.model,
@@ -774,10 +778,11 @@ pub async fn count_tokens(
 /// - 流式响应会等待 kiro 端返回 contextUsageEvent 后再发送 message_start
 /// - message_start 中的 input_tokens 是从 contextUsageEvent 计算的准确值
 pub async fn post_messages_cc(State(state): State<AppState>, request: Request<Body>) -> Response {
-    let (headers, raw_request, mut payload) = match parse_messages_request(request).await {
-        Ok(parsed) => parsed,
-        Err(response) => return response,
-    };
+    let (headers, raw_request, mut payload) =
+        match parse_messages_request(request, &state.prompt_cache_simulator).await {
+            Ok(parsed) => parsed,
+            Err(response) => return response,
+        };
 
     tracing::info!(
         model = %payload.model,

@@ -200,6 +200,8 @@ Docker 镜像默认不再强制读取 `/app/config/config.json`，可直接通�
 | `adminApiKey` | string | - | Admin API 密钥，配置后启用凭据管理 API 和 Web 管理界面 |
 | `loadBalancingMode` | string | `priority` | 负载均衡模式：`priority`（按优先级）或 `balanced`（均衡分配） |
 | `extractThinking` | boolean | `true` | 非流式响应的 thinking 块提取。启用后 `<thinking>` 标签会被解析为独立的 `thinking` 内容块 |
+| `simulatePromptCache` | boolean | `true` | 模拟 Anthropic prompt cache usage 字段 |
+| `stripCch` | boolean | `true` | 剔除 Claude Code system prompt 中动态的 `cch=...` 段，避免破坏缓存命中 |
 | `defaultEndpoint` | string | `ide` | 默认 Kiro 端点。凭据未显式指定 `endpoint` 时使用。当前支持：`ide` |
 
 #### 环境变量
@@ -229,6 +231,8 @@ Docker 镜像默认不再强制读取 `/app/config/config.json`，可直接通�
 | `KIRO_RS_ADMIN_API_KEY` | `adminApiKey` | Admin API/UI 密钥，空值表示禁用 Admin |
 | `KIRO_RS_LOAD_BALANCING_MODE` | `loadBalancingMode` | `priority` 或 `balanced` |
 | `KIRO_RS_EXTRACT_THINKING` | `extractThinking` | `true/false`、`1/0`、`yes/no` 或 `on/off` |
+| `KIRO_RS_SIMULATE_PROMPT_CACHE` | `simulatePromptCache` | `true/false`、`1/0`、`yes/no` 或 `on/off` |
+| `KIRO_RS_STRIP_CCH` | `stripCch` | `true/false`、`1/0`、`yes/no` 或 `on/off` |
 | `KIRO_RS_DEFAULT_ENDPOINT` | `defaultEndpoint` | 默认 Kiro 端点 |
 | `KIRO_RS_ENDPOINTS` | `endpoints` | JSON 对象，空值表示清空端点配置 |
 
@@ -257,7 +261,9 @@ Docker 镜像默认不再强制读取 `/app/config/config.json`，可直接通�
    "proxyPassword": "pass",
    "adminApiKey": "sk-admin-your-secret-key",
    "loadBalancingMode": "priority",
-   "extractThinking": true
+   "extractThinking": true,
+   "simulatePromptCache": true,
+   "stripCch": true
 }
 ```
 

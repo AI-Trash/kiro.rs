@@ -32,12 +32,20 @@ pub struct AppState {
 
 impl AppState {
     /// 创建新的应用状态
-    pub fn new(api_key: impl Into<String>, extract_thinking: bool) -> Self {
+    pub fn new(
+        api_key: impl Into<String>,
+        extract_thinking: bool,
+        simulate_prompt_cache: bool,
+        strip_cch: bool,
+    ) -> Self {
         Self {
             api_key: api_key.into(),
             kiro_provider: None,
             extract_thinking,
-            prompt_cache_simulator: PromptCacheSimulator::new(),
+            prompt_cache_simulator: PromptCacheSimulator::with_options(
+                simulate_prompt_cache,
+                strip_cch,
+            ),
         }
     }
 

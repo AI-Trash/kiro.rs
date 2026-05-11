@@ -112,6 +112,14 @@ pub struct Config {
     #[serde(default = "default_extract_thinking")]
     pub extract_thinking: bool,
 
+    /// 是否模拟 Anthropic prompt cache usage 字段（默认 true）
+    #[serde(default = "default_simulate_prompt_cache")]
+    pub simulate_prompt_cache: bool,
+
+    /// 是否剔除 Claude Code system prompt 中动态的 cch 段（默认 true）
+    #[serde(default = "default_strip_cch")]
+    pub strip_cch: bool,
+
     /// 默认端点名称（凭据未显式指定 endpoint 时使用，默认 "ide"）
     #[serde(default = "default_endpoint")]
     pub default_endpoint: String,
@@ -169,6 +177,14 @@ fn default_extract_thinking() -> bool {
     true
 }
 
+fn default_simulate_prompt_cache() -> bool {
+    true
+}
+
+fn default_strip_cch() -> bool {
+    true
+}
+
 fn default_endpoint() -> String {
     crate::kiro::endpoint::ide::IDE_ENDPOINT_NAME.to_string()
 }
@@ -196,6 +212,8 @@ impl Default for Config {
             admin_api_key: None,
             load_balancing_mode: default_load_balancing_mode(),
             extract_thinking: default_extract_thinking(),
+            simulate_prompt_cache: default_simulate_prompt_cache(),
+            strip_cch: default_strip_cch(),
             default_endpoint: default_endpoint(),
             endpoints: HashMap::new(),
             config_path: None,
@@ -314,6 +332,12 @@ impl Config {
             get_env,
             "KIRO_RS_EXTRACT_THINKING",
         )?;
+        override_bool(
+            &mut self.simulate_prompt_cache,
+            get_env,
+            "KIRO_RS_SIMULATE_PROMPT_CACHE",
+        )?;
+        override_bool(&mut self.strip_cch, get_env, "KIRO_RS_STRIP_CCH")?;
         override_string(
             &mut self.default_endpoint,
             get_env,
@@ -471,6 +495,8 @@ mod tests {
             ("KIRO_RS_ADMIN_API_KEY", "sk-admin"),
             ("KIRO_RS_LOAD_BALANCING_MODE", "balanced"),
             ("KIRO_RS_EXTRACT_THINKING", "false"),
+            ("KIRO_RS_SIMULATE_PROMPT_CACHE", "false"),
+            ("KIRO_RS_STRIP_CCH", "false"),
             ("KIRO_RS_DEFAULT_ENDPOINT", "ide"),
             (
                 "KIRO_RS_ENDPOINTS",
@@ -490,6 +516,8 @@ mod tests {
         assert_eq!(config.admin_api_key.as_deref(), Some("sk-admin"));
         assert_eq!(config.load_balancing_mode, "balanced");
         assert!(!config.extract_thinking);
+        assert!(!config.simulate_prompt_cache);
+        assert!(!config.strip_cch);
         assert_eq!(
             config.endpoints["ide"]["baseUrl"].as_str(),
             Some("https://example.com")
